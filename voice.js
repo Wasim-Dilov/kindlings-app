@@ -199,6 +199,14 @@
     if (deviceUtter) { try { global.speechSynthesis.cancel(); } catch (e) { /* ignore */ } deviceUtter = null; }
   }
 
+  // A clip packed as a data: URI (the claude.ai artifact build loads window.KINDLINGS_AUDIO_DATA from audio/pack-N.js)
+  // plays from memory; otherwise the file next to voice.js. Harmless when no pack is loaded.
+  function clipSrc(path) {
+    var data = global.KINDLINGS_AUDIO_DATA;
+    if (data && typeof data[path] === "string") return data[path];
+    return /^(data:|blob:|https?:|file:|\/)/.test(path) ? path : BASE + path;
+  }
+
   function playClip(path) {
     return new Promise(function (res) {
       if (!pool.length) { res(false); return; }
@@ -216,7 +224,7 @@
       try {
         el.muted = false;
         el.volume = settings.volume;
-        el.src = /^(data:|blob:|https?:|file:|\/)/.test(path) ? path : BASE + path;
+        el.src = clipSrc(path);
         el.onended = function () { done(true); };
         el.onerror = function () { done(false); };
         timer = setTimeout(function () { done(true); }, 30000);

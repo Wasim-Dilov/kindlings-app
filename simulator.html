@@ -3550,22 +3550,58 @@ window.addEventListener("pagehide",saveAll);
 // OFFLINE (service worker only on its own https or localhost origin)
 // =====================================================================
 const OFFLINE_FILES=["simulator.html","index.html","pet-art.js","challenges.js","lines.js","voice.js","audio/manifest.js","manifest.webmanifest"];
-let swProgress=null;
-function offlineStatusHtml(){
+// "Offline ready" only when the game files and every voice clip are really in the cache (counted here, not taken
+// from the worker's word), so a patchy first visit shows "Voices: 1,450 of 1,900 saved" and fills in later.
+let offlineCore=false,voiceSaved={have:0,total:0},offlineTimer=0;
+function clipUrls(){
+  const out=new Set();
+  try{const A=window.KINDLINGS_AUDIO;if(!A)return [];
+    const add=u=>{if(typeof u==="string"&&!/^https?:/.test(u))out.add(new URL(/^(\.\/|audio\/)/.test(u)||u.indexOf("/")>=0?u:"audio/"+u,location.href).href);};
+    const one=c=>{if(!c)return;if(typeof c==="string"){add(c);return;}if(typeof c==="object"){const u=c.src||c.file||c.url;if(typeof u==="string")add(u);else Object.values(c).forEach(add);}};
+    Object.values(A.clips||{}).forEach(one);Object.values(A.named||{}).forEach(one);
+  }catch(e){}
+  return [...out];
+}
+async function countSaved(){
+  const want=new Set(clipUrls()),total=want.size;let have=0;
+  for(const k of await caches.keys()){if(!k.startsWith("kindlings-"))continue;for(const r of await (await caches.open(k)).keys())if(want.delete(r.url))have++;}
+  return {have,total};
+}
+const fmtN=n=>Number(n).toLocaleString("en-GB");
+function offlineStatusHtml(){return `<div id="offlineStatus">${offlineStatusInner()}</div>`;}
+function offlineStatusInner(){
   if(location.protocol==="file:")return `<p class="small" style="margin:0"><span class="pill good">Plays offline</span> Opened from a file on this device, so it needs no connection. Voices play when the audio folder sits next to the file.</p>`;
-  if(swActive)return `<p class="small" style="margin:0"><span class="pill ${offlineReady?"good":"mute"}">${offlineReady?"Offline ready":"Saving for offline..."}</span> ${offlineReady?"The game and its voices are saved on this device. It plays with no connection.":swProgress?`Saving voices: ${swProgress.done} of ${swProgress.total}.`:""}</p>`;
+  if(swActive){
+    const v=voiceSaved,count=v.total?` Voices: ${fmtN(v.have)} of ${fmtN(v.total)} saved.`:"";
+    if(offlineReady)return `<p class="small" style="margin:0"><span class="pill good">Offline ready</span> The game and all its voices are saved on this device. It plays with no connection.${count}</p>`;
+    if(offlineCore)return `<p class="small" style="margin:0"><span class="pill mute">Saving voices...</span> The game itself already plays with no connection.${count} The rest save while you're online, so keep it open on Wi-Fi for a minute.</p>`;
+    return `<p class="small" style="margin:0"><span class="pill mute">Saving for offline...</span>${count}</p>`;
+  }
   return `<p class="small" style="margin:0"><span class="pill mute">Offline install not available here</span> This view can't save the game for offline play. Open it from its own web address (and add it to the home screen) and it saves itself.</p>`;
 }
+function showOfflineStatus(){const el=document.getElementById("offlineStatus");if(el)el.innerHTML=offlineStatusInner();}
+function askTopUp(reg){try{const w=navigator.serviceWorker.controller||(reg&&reg.active);if(w)w.postMessage({type:"top-up"});}catch(e){}}
 function initServiceWorker(){
   try{
     const okProto=location.protocol==="https:"||location.hostname==="localhost"||location.hostname==="127.0.0.1";
-    if(!okProto||!("serviceWorker" in navigator)||window.top!==window.self)return;
-    navigator.serviceWorker.register("sw.js").then(()=>navigator.serviceWorker.ready).then(()=>{swActive=true;checkOffline();}).catch(()=>{});
-    navigator.serviceWorker.addEventListener("message",e=>{const d=e.data||{};if(d.type==="progress"){swProgress={done:d.done,total:d.total};if(activeTab==="parent"&&panelVisible())renderPanel(true);}if(d.type==="cached"){swProgress=null;checkOffline();}});
+    if(window.KINDLINGS_NO_SW||!okProto||!("serviceWorker" in navigator)||window.top!==window.self)return;
+    navigator.serviceWorker.register("sw.js").then(()=>navigator.serviceWorker.ready).then(reg=>{swActive=true;askTopUp(reg);checkOffline();}).catch(()=>{});
+    navigator.serviceWorker.addEventListener("message",e=>{const d=e.data||{};if(d.type==="progress"||d.type==="cached"||d.type==="activated")checkOffline();});
+    // Back online after a patchy spell: fetch whatever voices are still missing.
+    window.addEventListener("online",()=>{navigator.serviceWorker.ready.then(askTopUp).catch(()=>{});});
   }catch(e){}
 }
 function checkOffline(){
-  try{Promise.all(OFFLINE_FILES.map(f=>caches.match(new URL(f,location.href).href))).then(rs=>{const ok=rs.every(Boolean);if(ok!==offlineReady){offlineReady=ok;if(activeTab==="parent")renderPanel(true);}if(!ok)setTimeout(checkOffline,2000);}).catch(()=>{});}catch(e){}
+  clearTimeout(offlineTimer);
+  try{
+    Promise.all([Promise.all(OFFLINE_FILES.map(f=>caches.match(new URL(f,location.href).href))),countSaved()]).then(([rs,v])=>{
+      const core=rs.every(Boolean),ready=core&&v.have>=v.total;
+      const changed=core!==offlineCore||ready!==offlineReady||v.have!==voiceSaved.have||v.total!==voiceSaved.total;
+      offlineCore=core;voiceSaved=v;offlineReady=ready;
+      if(changed)showOfflineStatus();
+      if(!ready)offlineTimer=setTimeout(checkOffline,3000);
+    }).catch(()=>{});
+  }catch(e){}
 }
 
 // =====================================================================
